@@ -1,0 +1,62 @@
+# STM32CubeIDE
+Debug/
+Release/
+.settings/
+
+# Build output
+build/
+*.o
+*.elf
+*.hex
+*.bin
+*.map
+*.list
+*.su
+*.d
+
+# Eclipse
+.metadata/
+.recommenders/
+RemoteSystemsTempFiles/
+
+# Debugger files
+*.launch
+
+# Compiled Object files
+*.slo
+*.lo
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Libraries
+*.lib
+*.a
+*.la
+
+# Shared objects (inc. Windows DLLs)
+*.dll
+*.so
+*.so.*
+*.dylib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# JLink
+JLinkLog.txt
+
+# OS specific
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Backup files
+*.bak
+*.old
+*.tmp
