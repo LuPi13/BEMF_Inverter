@@ -394,15 +394,15 @@ void HAL_TIM_PWM_MspInit(TIM_HandleTypeDef* htim_pwm)
 }
 
 /**
-  * @brief TIM_IC MSP Initialization
+  * @brief TIM_Encoder MSP Initialization
   * This function configures the hardware resources used in this example
-  * @param htim_ic: TIM_IC handle pointer
+  * @param htim_encoder: TIM_Encoder handle pointer
   * @retval None
   */
-void HAL_TIM_IC_MspInit(TIM_HandleTypeDef* htim_ic)
+void HAL_TIM_Encoder_MspInit(TIM_HandleTypeDef* htim_encoder)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
-  if(htim_ic->Instance==TIM3)
+  if(htim_encoder->Instance==TIM3)
   {
     /* USER CODE BEGIN TIM3_MspInit 0 */
 
@@ -499,14 +499,14 @@ void HAL_TIM_PWM_MspDeInit(TIM_HandleTypeDef* htim_pwm)
 }
 
 /**
-  * @brief TIM_IC MSP De-Initialization
+  * @brief TIM_Encoder MSP De-Initialization
   * This function freeze the hardware resources used in this example
-  * @param htim_ic: TIM_IC handle pointer
+  * @param htim_encoder: TIM_Encoder handle pointer
   * @retval None
   */
-void HAL_TIM_IC_MspDeInit(TIM_HandleTypeDef* htim_ic)
+void HAL_TIM_Encoder_MspDeInit(TIM_HandleTypeDef* htim_encoder)
 {
-  if(htim_ic->Instance==TIM3)
+  if(htim_encoder->Instance==TIM3)
   {
     /* USER CODE BEGIN TIM3_MspDeInit 0 */
 
