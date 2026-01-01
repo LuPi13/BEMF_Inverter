@@ -65,8 +65,25 @@ volatile OperationMode currentMode = MODE_6STEP;
 // 목표 듀티 사이클
 volatile double targetDutyCycle = 0.0;
 
+// 듀티 만들 때 필요한 ARR
+const uint32_t timerARR = 0;
+
 // 홀센서 상태
 volatile uint16_t hallADC[3] = {0};
+
+// 6-step에서 홀센서 상태에 따른 인버터 위상 매핑 테이블
+// 홀센서 비트: 0bABC
+// 직접 돌리며 수정 필요(회전순서: 100 110 010 011 001 101로 추정)
+const uint8_t hallToPhase[8] = {
+    0, // 000
+    0b010, // 001
+    0b100, // 010
+    0b110, // 011
+    0b001, // 100
+    0b110, // 101
+    0b101, // 110
+    0  // 111
+};
 
 // 디버그용
 volatile uint32_t debugVar1 = 0;
@@ -153,6 +170,8 @@ int main(void)
   MX_ADC3_Init();
   MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
+  // ARR 값 불러오기
+  timerARR = htim1.Init.Period;
   // 운영 모드 선택
   // Mode_Sel 핀이 HIGH이면 FOC 모드
   if (HAL_GPIO_ReadPin(Mode_Sel_GPIO_Port, Mode_Sel_Pin) == GPIO_PIN_SET) {
@@ -178,7 +197,19 @@ int main(void)
   {
       // 6-STEP motor control logic
       if (currentMode == MODE_6STEP) {
-          // HALL A, B, C 읽기
+          // HALL A, B, C로 홀비트
+          uint8_t hallBit =
+                  ((hallADC[0] << 2) & 0b100) |
+                  ((hallADC[1] << 1) & 0b010) |
+                  (hallADC[2] & 0b001);
+          // 홀비트로 위상 매핑
+          uint8_t phase = hallToPhase[hallBit];
+          // 듀티 사이클 설정
+          uint32_t dutyCycle = (uint32_t)(targetDutyCycle * timerARR);
+          // PWM 출력 설정
+          __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (phase & 0b100) ? dutyCycle : 0);
+          __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, (phase & 0b010) ? dutyCycle : 0);
+          __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, (phase & 0b001) ? dutyCycle : 0);
 
 
       }
