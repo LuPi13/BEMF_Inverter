@@ -63,6 +63,8 @@ void Error_Handler(void);
 #define BEMF_Gate_GPIO_Port GPIOA
 #define VBUS_sense_Pin GPIO_PIN_9
 #define VBUS_sense_GPIO_Port GPIOA
+#define Mode_Sel_Pin GPIO_PIN_12
+#define Mode_Sel_GPIO_Port GPIOC
 
 /* USER CODE BEGIN Private defines */
 
