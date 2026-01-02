@@ -212,6 +212,7 @@ int main(void)
           __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, (phase & 0b001) ? dutyCycle : 0);
 
 
+
       }
 
       // FOC motor control logic
