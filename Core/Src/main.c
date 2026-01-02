@@ -30,8 +30,17 @@
 /* USER CODE BEGIN PTD */
 typedef enum {
     MODE_6STEP = 0,
-    MODE_FOC   = 1
+    MODE_FOC
 } OperationMode;
+
+typedef enum {
+    STEP_INIT = 0,
+    STEP_CURRENT_CONTROL,
+    STEP_VELOCITY_CONTROL,
+    FOC_INIT,
+    FOC_CURRENT_CONTROL,
+    FOC_VELOCITY_CONTROL
+} ControlMode;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -45,10 +54,8 @@ typedef enum {
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
-ADC_HandleTypeDef hadc1;
 ADC_HandleTypeDef hadc2;
 ADC_HandleTypeDef hadc3;
-DMA_HandleTypeDef hdma_adc1;
 
 FDCAN_HandleTypeDef hfdcan2;
 
@@ -61,12 +68,13 @@ UART_HandleTypeDef huart2;
 /* USER CODE BEGIN PV */
 // 현재 운영 모드
 volatile OperationMode currentMode = MODE_6STEP;
+volatile ControlMode controlState = STEP_INIT;
 
 // 목표 듀티 사이클
 volatile double targetDutyCycle = 0.0;
 
 // 듀티 만들 때 필요한 ARR
-const uint32_t timerARR = 0;
+uint32_t timerARR = 0;
 
 // 홀센서 상태
 volatile uint16_t hallADC[3] = {0};
@@ -92,9 +100,7 @@ volatile uint32_t debugVar1 = 0;
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
-static void MX_DMA_Init(void);
 static void MX_FDCAN2_Init(void);
-static void MX_ADC1_Init(void);
 static void MX_ADC2_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_TIM3_Init(void);
@@ -110,12 +116,23 @@ static void MX_TIM6_Init(void);
 int8_t USB_Log(const char* msg) {
     uint16_t len = strlen(msg);
     if (len > 0) {
-        // Transmit the message over USB CDC
-        if (CDC_Transmit_FS((uint8_t*)msg, len) == USBD_OK) {
-            return 0; // Success
-        } else {
-            return -1; // Transmission error
-        }
+        uint8_t result;
+        uint8_t retries = 0;
+        
+        // Retry logic for USBD_BUSY
+        do {
+            result = CDC_Transmit_FS((uint8_t*)msg, len);
+            if (result == USBD_OK) {
+                return 0; // Success
+            } else if (result == USBD_BUSY) {
+//                HAL_Delay(10); // Wait before retry
+                retries++;
+            } else {
+                return -1; // Other error
+            }
+        } while (result == USBD_BUSY && retries < 100);
+        
+        return -1; // Failed after retries
     }
     return -2; // Invalid length
 }
@@ -123,7 +140,7 @@ int8_t USB_Log(const char* msg) {
 int8_t USB_LogLn(const char* msg) {
     int8_t res = USB_Log(msg);
     if (res == 0) {
-        // Append newline characters
+//        HAL_Delay(10); // Small delay between transmissions
         return USB_Log("\r\n");
     }
     return res;
@@ -159,9 +176,7 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_DMA_Init();
   MX_FDCAN2_Init();
-  MX_ADC1_Init();
   MX_ADC2_Init();
   MX_TIM1_Init();
   MX_TIM3_Init();
@@ -181,10 +196,10 @@ int main(void)
 
   // 그렇지 않으면 6-STEP 모드
   else {
-      HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED);
-      HAL_Delay(10);
+//      HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED);
+//      HAL_Delay(10);
       HAL_TIM_Base_Start_IT(&htim6);
-      HAL_ADC_Start_DMA(&hadc1,(uint32_t *) hallADC, 3);
+//      HAL_ADC_Start_DMA(&hadc1,(uint32_t *) hallADC, 3);
 
       currentMode = MODE_6STEP;
       USB_LogLn("Operating Mode: 6-STEP");
@@ -197,19 +212,27 @@ int main(void)
   {
       // 6-STEP motor control logic
       if (currentMode == MODE_6STEP) {
-          // HALL A, B, C로 홀비트
-          uint8_t hallBit =
-                  ((hallADC[0] << 2) & 0b100) |
-                  ((hallADC[1] << 1) & 0b010) |
-                  (hallADC[2] & 0b001);
-          // 홀비트로 위상 매핑
-          uint8_t phase = hallToPhase[hallBit];
-          // 듀티 사이클 설정
-          uint32_t dutyCycle = (uint32_t)(targetDutyCycle * timerARR);
-          // PWM 출력 설정
-          __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (phase & 0b100) ? dutyCycle : 0);
-          __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, (phase & 0b010) ? dutyCycle : 0);
-          __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, (phase & 0b001) ? dutyCycle : 0);
+          if (controlState == STEP_INIT) {
+              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
+              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
+              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
+          }
+
+          else if (controlState == STEP_CURRENT_CONTROL) {
+              // HALL A, B, C로 홀비트
+              uint8_t hallBit =
+                      ((hallADC[0] << 2) & 0b100) |
+                      ((hallADC[1] << 1) & 0b010) |
+                      (hallADC[2] & 0b001);
+              // 홀비트로 위상 매핑
+              uint8_t phase = hallToPhase[hallBit];
+              // 듀티 사이클 설정
+              uint32_t dutyCycle = (uint32_t)(targetDutyCycle * timerARR);
+              // PWM 출력 설정
+              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (phase & 0b100) ? dutyCycle : 0);
+              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, (phase & 0b010) ? dutyCycle : 0);
+              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, (phase & 0b001) ? dutyCycle : 0);
+          }
 
 
 
@@ -274,92 +297,6 @@ void SystemClock_Config(void)
   /** Enables the Clock Security System
   */
   HAL_RCC_EnableCSS();
-}
-
-/**
-  * @brief ADC1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_ADC1_Init(void)
-{
-
-  /* USER CODE BEGIN ADC1_Init 0 */
-
-  /* USER CODE END ADC1_Init 0 */
-
-  ADC_MultiModeTypeDef multimode = {0};
-  ADC_ChannelConfTypeDef sConfig = {0};
-
-  /* USER CODE BEGIN ADC1_Init 1 */
-
-  /* USER CODE END ADC1_Init 1 */
-
-  /** Common config
-  */
-  hadc1.Instance = ADC1;
-  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
-  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
-  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.GainCompensation = 0;
-  hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE;
-  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
-  hadc1.Init.LowPowerAutoWait = DISABLE;
-  hadc1.Init.ContinuousConvMode = ENABLE;
-  hadc1.Init.NbrOfConversion = 3;
-  hadc1.Init.DiscontinuousConvMode = DISABLE;
-  hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIG_T6_TRGO;
-  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_RISING;
-  hadc1.Init.DMAContinuousRequests = ENABLE;
-  hadc1.Init.Overrun = ADC_OVR_DATA_OVERWRITTEN;
-  hadc1.Init.OversamplingMode = DISABLE;
-  if (HAL_ADC_Init(&hadc1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure the ADC multi-mode
-  */
-  multimode.Mode = ADC_MODE_INDEPENDENT;
-  if (HAL_ADCEx_MultiModeConfigChannel(&hadc1, &multimode) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure Regular Channel
-  */
-  sConfig.Channel = ADC_CHANNEL_1;
-  sConfig.Rank = ADC_REGULAR_RANK_1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_2CYCLES_5;
-  sConfig.SingleDiff = ADC_SINGLE_ENDED;
-  sConfig.OffsetNumber = ADC_OFFSET_NONE;
-  sConfig.Offset = 0;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure Regular Channel
-  */
-  sConfig.Channel = ADC_CHANNEL_2;
-  sConfig.Rank = ADC_REGULAR_RANK_2;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure Regular Channel
-  */
-  sConfig.Channel = ADC_CHANNEL_3;
-  sConfig.Rank = ADC_REGULAR_RANK_3;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN ADC1_Init 2 */
-
-  /* USER CODE END ADC1_Init 2 */
-
 }
 
 /**
@@ -748,23 +685,6 @@ static void MX_USART2_UART_Init(void)
 }
 
 /**
-  * Enable DMA controller clock
-  */
-static void MX_DMA_Init(void)
-{
-
-  /* DMA controller clock enable */
-  __HAL_RCC_DMAMUX1_CLK_ENABLE();
-  __HAL_RCC_DMA1_CLK_ENABLE();
-
-  /* DMA interrupt init */
-  /* DMA1_Channel1_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
-
-}
-
-/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -785,18 +705,18 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(BEMF_Gate_GPIO_Port, BEMF_Gate_Pin, GPIO_PIN_RESET);
 
+  /*Configure GPIO pins : Hall_A_Pin Hall_B_Pin Hall_C_Pin VBUS_sense_Pin */
+  GPIO_InitStruct.Pin = Hall_A_Pin|Hall_B_Pin|Hall_C_Pin|VBUS_sense_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
   /*Configure GPIO pin : BEMF_Gate_Pin */
   GPIO_InitStruct.Pin = BEMF_Gate_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(BEMF_Gate_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : VBUS_sense_Pin */
-  GPIO_InitStruct.Pin = VBUS_sense_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(VBUS_sense_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : Mode_Sel_Pin */
   GPIO_InitStruct.Pin = Mode_Sel_Pin;
@@ -812,8 +732,10 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
     if (htim->Instance == TIM6) {
-        // 주기적으로 실행할 코드 작성
-        debugVar1++;  // 디버그 변수 증가
+        hallADC[0] = HAL_GPIO_ReadPin(Hall_A_GPIO_Port, Hall_A_Pin);
+        hallADC[1] = HAL_GPIO_ReadPin(Hall_B_GPIO_Port, Hall_B_Pin);
+        hallADC[2] = HAL_GPIO_ReadPin(Hall_C_GPIO_Port, Hall_C_Pin);
+
     }
 }
 /* USER CODE END 4 */
