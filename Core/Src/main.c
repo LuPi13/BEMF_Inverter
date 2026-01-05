@@ -39,7 +39,13 @@ typedef enum {
     STEP_VELOCITY_CONTROL,
     FOC_INIT,
     FOC_CURRENT_CONTROL,
-    FOC_VELOCITY_CONTROL
+    FOC_VELOCITY_CONTROL,
+    RAW_A,
+    RAW_B,
+    RAW_C,
+    RAW_AB,
+    RAW_BC,
+    RAW_CA
 } ControlMode;
 /* USER CODE END PTD */
 
@@ -61,7 +67,6 @@ FDCAN_HandleTypeDef hfdcan2;
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim3;
-TIM_HandleTypeDef htim6;
 
 UART_HandleTypeDef huart2;
 
@@ -106,7 +111,6 @@ static void MX_TIM1_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_ADC3_Init(void);
-static void MX_TIM6_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -183,7 +187,6 @@ int main(void)
   MX_USART2_UART_Init();
   MX_USB_Device_Init();
   MX_ADC3_Init();
-  MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
   // ARR 값 불러오기
   timerARR = htim1.Init.Period;
@@ -236,6 +239,43 @@ int main(void)
 
 
 
+          // 디버그용 강제 출력 모드
+          else if (controlState == RAW_A) {
+              uint32_t dutyCycle = (uint32_t)(targetDutyCycle * timerARR);
+              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, dutyCycle);
+              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
+              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
+          }
+          else if (controlState == RAW_B) {
+              uint32_t dutyCycle = (uint32_t)(targetDutyCycle * timerARR);
+              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
+              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, dutyCycle);
+              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
+          }
+          else if (controlState == RAW_C) {
+              uint32_t dutyCycle = (uint32_t)(targetDutyCycle * timerARR);
+              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
+              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
+              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, dutyCycle);
+          }
+          else if (controlState == RAW_AB) {
+              uint32_t dutyCycle = (uint32_t)(targetDutyCycle * timerARR);
+              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, dutyCycle);
+              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, dutyCycle);
+              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
+          }
+          else if (controlState == RAW_BC) {
+              uint32_t dutyCycle = (uint32_t)(targetDutyCycle * timerARR);
+              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
+              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, dutyCycle);
+              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, dutyCycle);
+          }
+          else if (controlState == RAW_CA) {
+              uint32_t dutyCycle = (uint32_t)(targetDutyCycle * timerARR);
+              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, dutyCycle);
+              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
+              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, dutyCycle);
+          }
       }
 
       // FOC motor control logic
@@ -599,44 +639,6 @@ static void MX_TIM3_Init(void)
 }
 
 /**
-  * @brief TIM6 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_TIM6_Init(void)
-{
-
-  /* USER CODE BEGIN TIM6_Init 0 */
-
-  /* USER CODE END TIM6_Init 0 */
-
-  TIM_MasterConfigTypeDef sMasterConfig = {0};
-
-  /* USER CODE BEGIN TIM6_Init 1 */
-
-  /* USER CODE END TIM6_Init 1 */
-  htim6.Instance = TIM6;
-  htim6.Init.Prescaler = 16;
-  htim6.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim6.Init.Period = 99;
-  htim6.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_Base_Init(&htim6) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sMasterConfig.MasterOutputTrigger = TIM_TRGO_UPDATE;
-  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-  if (HAL_TIMEx_MasterConfigSynchronization(&htim6, &sMasterConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN TIM6_Init 2 */
-
-  /* USER CODE END TIM6_Init 2 */
-
-}
-
-/**
   * @brief USART2 Initialization Function
   * @param None
   * @retval None
@@ -705,9 +707,9 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(BEMF_Gate_GPIO_Port, BEMF_Gate_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pins : Hall_A_Pin Hall_B_Pin Hall_C_Pin VBUS_sense_Pin */
-  GPIO_InitStruct.Pin = Hall_A_Pin|Hall_B_Pin|Hall_C_Pin|VBUS_sense_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  /*Configure GPIO pins : Hall_A_Pin Hall_B_Pin Hall_C_Pin */
+  GPIO_InitStruct.Pin = Hall_A_Pin|Hall_B_Pin|Hall_C_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
@@ -718,11 +720,27 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(BEMF_Gate_GPIO_Port, &GPIO_InitStruct);
 
+  /*Configure GPIO pin : VBUS_sense_Pin */
+  GPIO_InitStruct.Pin = VBUS_sense_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(VBUS_sense_GPIO_Port, &GPIO_InitStruct);
+
   /*Configure GPIO pin : Mode_Sel_Pin */
   GPIO_InitStruct.Pin = Mode_Sel_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   HAL_GPIO_Init(Mode_Sel_GPIO_Port, &GPIO_InitStruct);
+
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI0_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI0_IRQn);
+
+  HAL_NVIC_SetPriority(EXTI1_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI1_IRQn);
+
+  HAL_NVIC_SetPriority(EXTI2_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI2_IRQn);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
@@ -730,12 +748,24 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
-    if (htim->Instance == TIM6) {
+/**
+ * @brief GPIO EXTI Callback 함수
+ *
+ * @note 홀센서 핀의 상태를 읽어 hallADC 배열에 저장
+ */
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
+    if (GPIO_Pin == Hall_A_Pin) {
         hallADC[0] = HAL_GPIO_ReadPin(Hall_A_GPIO_Port, Hall_A_Pin);
+    }
+    else if (GPIO_Pin == Hall_B_Pin) {
         hallADC[1] = HAL_GPIO_ReadPin(Hall_B_GPIO_Port, Hall_B_Pin);
+    }
+    else if (GPIO_Pin == Hall_C_Pin) {
         hallADC[2] = HAL_GPIO_ReadPin(Hall_C_GPIO_Port, Hall_C_Pin);
+    }
 
+        // 디버그 변수 업데이트
+        debugVar1++;
     }
 }
 /* USER CODE END 4 */

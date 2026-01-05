@@ -61,10 +61,13 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 #define Hall_A_Pin GPIO_PIN_0
 #define Hall_A_GPIO_Port GPIOA
+#define Hall_A_EXTI_IRQn EXTI0_IRQn
 #define Hall_B_Pin GPIO_PIN_1
 #define Hall_B_GPIO_Port GPIOA
+#define Hall_B_EXTI_IRQn EXTI1_IRQn
 #define Hall_C_Pin GPIO_PIN_2
 #define Hall_C_GPIO_Port GPIOA
+#define Hall_C_EXTI_IRQn EXTI2_IRQn
 #define BEMF_Gate_Pin GPIO_PIN_3
 #define BEMF_Gate_GPIO_Port GPIOA
 #define VBUS_sense_Pin GPIO_PIN_9
