@@ -89,12 +89,12 @@ volatile uint16_t hallADC[3] = {0};
 // 직접 돌리며 수정 필요(회전순서: 100 110 010 011 001 101로 추정)
 const uint8_t hallToPhase[8] = {
     0, // 000
-    0b010, // 001
-    0b100, // 010
-    0b110, // 011
-    0b001, // 100
-    0b110, // 101
-    0b101, // 110
+    0b001, // 001
+    0b010, // 010
+    0b011, // 011
+    0b100, // 100
+    0b101, // 101
+    0b110, // 110
     0  // 111
 };
 
@@ -190,6 +190,15 @@ int main(void)
   /* USER CODE BEGIN 2 */
   // ARR 값 불러오기
   timerARR = htim1.Init.Period;
+
+  // PWM 시작
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
+  HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_1);
+  HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_2);
+  HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_3);
+
   // 운영 모드 선택
   // Mode_Sel 핀이 HIGH이면 FOC 모드
   if (HAL_GPIO_ReadPin(Mode_Sel_GPIO_Port, Mode_Sel_Pin) == GPIO_PIN_SET) {
@@ -199,10 +208,6 @@ int main(void)
 
   // 그렇지 않으면 6-STEP 모드
   else {
-//      HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED);
-//      HAL_Delay(10);
-      HAL_TIM_Base_Start_IT(&htim6);
-//      HAL_ADC_Start_DMA(&hadc1,(uint32_t *) hallADC, 3);
 
       currentMode = MODE_6STEP;
       USB_LogLn("Operating Mode: 6-STEP");
@@ -531,7 +536,7 @@ static void MX_TIM1_Init(void)
   htim1.Instance = TIM1;
   htim1.Init.Prescaler = 0;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim1.Init.Period = 849;
+  htim1.Init.Period = 16999;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
@@ -568,7 +573,7 @@ static void MX_TIM1_Init(void)
   sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
   sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
   sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
-  sBreakDeadTimeConfig.DeadTime = 34;
+  sBreakDeadTimeConfig.DeadTime = 60;
   sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
   sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
   sBreakDeadTimeConfig.BreakFilter = 0;
@@ -710,7 +715,7 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pins : Hall_A_Pin Hall_B_Pin Hall_C_Pin */
   GPIO_InitStruct.Pin = Hall_A_Pin|Hall_B_Pin|Hall_C_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /*Configure GPIO pin : BEMF_Gate_Pin */
@@ -764,9 +769,8 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
         hallADC[2] = HAL_GPIO_ReadPin(Hall_C_GPIO_Port, Hall_C_Pin);
     }
 
-        // 디버그 변수 업데이트
-        debugVar1++;
-    }
+    // 디버그 변수 업데이트
+    debugVar1++;
 }
 /* USER CODE END 4 */
 
