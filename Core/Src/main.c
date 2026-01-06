@@ -74,10 +74,10 @@ volatile ControlMode controlState = STEP_INIT;
 // -----------6-step 0 위치 잡기------------- //
 
 // 6-step에서 0 위치 잡을 때 넣을 PWM duty
-volatile double zeroPosDutyCycle = 0.015;
+volatile double zeroPosDutyCycle = 0.03;
 
 // 6-step에서 0 위치 잡을 때 걸리는 한 틱(ms)
-volatile uint32_t zeroPosTick = 10;
+volatile uint32_t zeroPosTick = 100;
 
 // 6-step에서 0 위치 잡을 때 쓰는 타이머
 volatile uint32_t zeroPosTimer = 0;
@@ -265,6 +265,8 @@ int main(void)
       if (zeroPosFlag) {
           controlState = STEP_SET_0POS;
           zeroPosTimer = HAL_GetTick();
+          zeroPosFlag = 0;
+          targetDutyCycle = 0.0;
       }
       // 6-STEP motor control logic
       if (currentMode == MODE_6STEP) {
@@ -288,7 +290,6 @@ int main(void)
               }
 
               else {
-                  zeroPosFlag = 0;
                   controlState = STEP_CURRENT_CONTROL;
               }
           }
@@ -558,7 +559,7 @@ static void MX_TIM1_Init(void)
   htim1.Instance = TIM1;
   htim1.Init.Prescaler = 0;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim1.Init.Period = 16999;
+  htim1.Init.Period = 8499;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
@@ -595,7 +596,7 @@ static void MX_TIM1_Init(void)
   sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
   sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
   sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
-  sBreakDeadTimeConfig.DeadTime = 60;
+  sBreakDeadTimeConfig.DeadTime = 150;
   sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
   sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
   sBreakDeadTimeConfig.BreakFilter = 0;
@@ -781,17 +782,11 @@ static void MX_GPIO_Init(void)
  * @note 홀센서 핀의 상태를 읽어 hallBit에 저장
  */
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
-    if (GPIO_Pin == Hall_A_Pin) {
-        uint8_t bit = HAL_GPIO_ReadPin(Hall_A_GPIO_Port, Hall_A_Pin);
-        hallbit = (hallbit & ~(1u << 2)) | ((bit & 1u) << 2);
-    }
-    else if (GPIO_Pin == Hall_B_Pin) {
-        uint8_t bit = HAL_GPIO_ReadPin(Hall_A_GPIO_Port, Hall_A_Pin);
-        hallbit = (hallbit & ~(1u << 1)) | ((bit & 1u) << 1);
-    }
-    else if (GPIO_Pin == Hall_C_Pin) {
-        uint8_t bit = HAL_GPIO_ReadPin(Hall_A_GPIO_Port, Hall_A_Pin);
-        hallbit = (hallbit & ~(1u << 2)) | ((bit & 1u) << 2);
+    if ((GPIO_Pin == Hall_A_Pin) || (GPIO_Pin == Hall_B_Pin) || (GPIO_Pin == Hall_C_Pin)) {
+        hallbit = (HAL_GPIO_ReadPin(Hall_A_GPIO_Port, Hall_A_Pin) << 2) |
+                      (HAL_GPIO_ReadPin(Hall_B_GPIO_Port, Hall_B_Pin) << 1) |
+                      (HAL_GPIO_ReadPin(Hall_C_GPIO_Port, Hall_C_Pin) << 0);
+        prevPosition = position;
     }
     
     // 위치 업데이트
@@ -805,7 +800,6 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
         else if (((prevPosition + 5) % 6) == position) {
             rotationDirection = -1; // CCW
         }
-        prevPosition = position;
     }
 
     // 디버그 변수 업데이트
