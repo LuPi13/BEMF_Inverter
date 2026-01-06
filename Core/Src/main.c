@@ -35,17 +35,13 @@ typedef enum {
 
 typedef enum {
     STEP_INIT = 0,
+    STEP_SET_0POS,
     STEP_CURRENT_CONTROL,
     STEP_VELOCITY_CONTROL,
+    STEP_POSITION_CONTROL,
     FOC_INIT,
     FOC_CURRENT_CONTROL,
     FOC_VELOCITY_CONTROL,
-    RAW_A,
-    RAW_B,
-    RAW_C,
-    RAW_AB,
-    RAW_BC,
-    RAW_CA
 } ControlMode;
 /* USER CODE END PTD */
 
@@ -75,6 +71,22 @@ UART_HandleTypeDef huart2;
 volatile OperationMode currentMode = MODE_6STEP;
 volatile ControlMode controlState = STEP_INIT;
 
+// -----------6-step 0 위치 잡기------------- //
+
+// 6-step에서 0 위치 잡을 때 넣을 PWM duty
+volatile double zeroPosDutyCycle = 0.015;
+
+// 6-step에서 0 위치 잡을 때 걸리는 한 틱(ms)
+volatile uint32_t zeroPosTick = 10;
+
+// 6-step에서 0 위치 잡을 때 쓰는 타이머
+volatile uint32_t zeroPosTimer = 0;
+
+// 플래그
+volatile uint8_t zeroPosFlag = 0;
+
+// ---------------------------------------- //
+
 // 목표 듀티 사이클
 volatile double targetDutyCycle = 0.0;
 
@@ -82,21 +94,52 @@ volatile double targetDutyCycle = 0.0;
 uint32_t timerARR = 0;
 
 // 홀센서 상태
-volatile uint16_t hallADC[3] = {0};
+volatile uint8_t hallbit = 0;
 
-// 6-step에서 홀센서 상태에 따른 인버터 위상 매핑 테이블
-// 홀센서 비트: 0bABC
-// 직접 돌리며 수정 필요(회전순서: 100 110 010 011 001 101로 추정)
-const uint8_t hallToPhase[8] = {
-    0, // 000
-    0b001, // 001
-    0b010, // 010
-    0b011, // 011
-    0b100, // 100
-    0b101, // 101
-    0b110, // 110
-    0  // 111
+// 홀비트에 따른 섹터 인덱스
+const uint8_t hallToSector[8] = {
+    0xFF, // 000 - 무효
+    4,    // 001
+    2,    // 010
+    3,    // 011
+    0,    // 100
+    5,    // 101
+    1,    // 110
+    0xFF  // 111 - 무효
 };
+
+// 6-step에서 섹터에 따른 인버터 위상 매핑 테이블
+const uint8_t cwLUT[8] = {
+    0b100,
+    0b110,
+    0b010,
+    0b011,
+    0b001,
+    0b101,
+    0,
+    0
+};
+
+const uint8_t ccwLUT[8] = {
+    0b001,
+    0b101,
+    0b100,
+    0b110,
+    0b010,
+    0b011,
+    0,
+    0
+};
+
+// 위치
+volatile uint8_t position = 0;
+volatile uint8_t prevPosition = 0;
+
+volatile int8_t rotationDirection = 0; // 1 = CW, -1 = CCW, 0 = 정지/무효
+
+// 방향 설정
+volatile uint8_t isCCW = 0;
+
 
 // 디버그용
 volatile uint32_t debugVar1 = 0;
@@ -129,7 +172,6 @@ int8_t USB_Log(const char* msg) {
             if (result == USBD_OK) {
                 return 0; // Success
             } else if (result == USBD_BUSY) {
-//                HAL_Delay(10); // Wait before retry
                 retries++;
             } else {
                 return -1; // Other error
@@ -203,6 +245,7 @@ int main(void)
   // Mode_Sel 핀이 HIGH이면 FOC 모드
   if (HAL_GPIO_ReadPin(Mode_Sel_GPIO_Port, Mode_Sel_Pin) == GPIO_PIN_SET) {
       currentMode = MODE_FOC;
+      controlState = FOC_INIT;
       USB_LogLn("Operating Mode: FOC");
   }
 
@@ -210,6 +253,7 @@ int main(void)
   else {
 
       currentMode = MODE_6STEP;
+      controlState = STEP_INIT;
       USB_LogLn("Operating Mode: 6-STEP");
   }
   /* USER CODE END 2 */
@@ -218,6 +262,10 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+      if (zeroPosFlag) {
+          controlState = STEP_SET_0POS;
+          zeroPosTimer = HAL_GetTick();
+      }
       // 6-STEP motor control logic
       if (currentMode == MODE_6STEP) {
           if (controlState == STEP_INIT) {
@@ -226,60 +274,34 @@ int main(void)
               __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
           }
 
+          else if (controlState == STEP_SET_0POS) {
+              uint8_t currentProgress = (HAL_GetTick() - zeroPosTimer) / zeroPosTick;
+              if (currentProgress <= 5) {
+                  // 홀비트로 위상 매핑
+                  uint8_t phase = cwLUT[currentProgress];
+                  // 듀티 사이클 설정
+                  uint32_t dutyCycle = (uint32_t)(zeroPosDutyCycle * timerARR);
+                  // PWM 출력 설정
+                  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (phase & 0b100) ? dutyCycle : 0);
+                  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, (phase & 0b010) ? dutyCycle : 0);
+                  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, (phase & 0b001) ? dutyCycle : 0);
+              }
+
+              else {
+                  zeroPosFlag = 0;
+                  controlState = STEP_CURRENT_CONTROL;
+              }
+          }
+
           else if (controlState == STEP_CURRENT_CONTROL) {
-              // HALL A, B, C로 홀비트
-              uint8_t hallBit =
-                      ((hallADC[0] << 2) & 0b100) |
-                      ((hallADC[1] << 1) & 0b010) |
-                      (hallADC[2] & 0b001);
               // 홀비트로 위상 매핑
-              uint8_t phase = hallToPhase[hallBit];
+              uint8_t phase = isCCW ? ccwLUT[position] : cwLUT[position];
               // 듀티 사이클 설정
               uint32_t dutyCycle = (uint32_t)(targetDutyCycle * timerARR);
               // PWM 출력 설정
               __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (phase & 0b100) ? dutyCycle : 0);
               __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, (phase & 0b010) ? dutyCycle : 0);
               __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, (phase & 0b001) ? dutyCycle : 0);
-          }
-
-
-
-          // 디버그용 강제 출력 모드
-          else if (controlState == RAW_A) {
-              uint32_t dutyCycle = (uint32_t)(targetDutyCycle * timerARR);
-              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, dutyCycle);
-              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
-              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
-          }
-          else if (controlState == RAW_B) {
-              uint32_t dutyCycle = (uint32_t)(targetDutyCycle * timerARR);
-              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
-              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, dutyCycle);
-              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
-          }
-          else if (controlState == RAW_C) {
-              uint32_t dutyCycle = (uint32_t)(targetDutyCycle * timerARR);
-              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
-              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
-              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, dutyCycle);
-          }
-          else if (controlState == RAW_AB) {
-              uint32_t dutyCycle = (uint32_t)(targetDutyCycle * timerARR);
-              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, dutyCycle);
-              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, dutyCycle);
-              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
-          }
-          else if (controlState == RAW_BC) {
-              uint32_t dutyCycle = (uint32_t)(targetDutyCycle * timerARR);
-              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
-              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, dutyCycle);
-              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, dutyCycle);
-          }
-          else if (controlState == RAW_CA) {
-              uint32_t dutyCycle = (uint32_t)(targetDutyCycle * timerARR);
-              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, dutyCycle);
-              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
-              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, dutyCycle);
           }
       }
 
@@ -756,17 +778,34 @@ static void MX_GPIO_Init(void)
 /**
  * @brief GPIO EXTI Callback 함수
  *
- * @note 홀센서 핀의 상태를 읽어 hallADC 배열에 저장
+ * @note 홀센서 핀의 상태를 읽어 hallBit에 저장
  */
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
     if (GPIO_Pin == Hall_A_Pin) {
-        hallADC[0] = HAL_GPIO_ReadPin(Hall_A_GPIO_Port, Hall_A_Pin);
+        uint8_t bit = HAL_GPIO_ReadPin(Hall_A_GPIO_Port, Hall_A_Pin);
+        hallbit = (hallbit & ~(1u << 2)) | ((bit & 1u) << 2);
     }
     else if (GPIO_Pin == Hall_B_Pin) {
-        hallADC[1] = HAL_GPIO_ReadPin(Hall_B_GPIO_Port, Hall_B_Pin);
+        uint8_t bit = HAL_GPIO_ReadPin(Hall_A_GPIO_Port, Hall_A_Pin);
+        hallbit = (hallbit & ~(1u << 1)) | ((bit & 1u) << 1);
     }
     else if (GPIO_Pin == Hall_C_Pin) {
-        hallADC[2] = HAL_GPIO_ReadPin(Hall_C_GPIO_Port, Hall_C_Pin);
+        uint8_t bit = HAL_GPIO_ReadPin(Hall_A_GPIO_Port, Hall_A_Pin);
+        hallbit = (hallbit & ~(1u << 2)) | ((bit & 1u) << 2);
+    }
+    
+    // 위치 업데이트
+    position = hallToSector[hallbit];
+    
+    // 방향 감지
+    if (position != prevPosition) {
+        if (((prevPosition + 1) % 6) == position) {
+            rotationDirection = 1; // CW
+        }
+        else if (((prevPosition + 5) % 6) == position) {
+            rotationDirection = -1; // CCW
+        }
+        prevPosition = position;
     }
 
     // 디버그 변수 업데이트
