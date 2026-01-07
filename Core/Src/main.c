@@ -71,7 +71,6 @@ UART_HandleTypeDef huart2;
 volatile OperationMode currentMode = MODE_6STEP;
 volatile ControlMode controlState = STEP_INIT;
 
-// -----------6-step 0 위치 잡기------------- //
 
 // 6-step에서 0 위치 잡을 때 넣을 PWM duty
 volatile double zeroPosDutyCycle = 0.03;
@@ -85,7 +84,6 @@ volatile uint32_t zeroPosTimer = 0;
 // 플래그
 volatile uint8_t zeroPosFlag = 0;
 
-// ---------------------------------------- //
 
 // 목표 듀티 사이클
 volatile double targetDutyCycle = 0.0;
@@ -137,7 +135,7 @@ volatile uint8_t prevPosition = 0;
 
 volatile int8_t rotationDirection = 0; // 1 = CW, -1 = CCW, 0 = 정지/무효
 
-// 속도
+// 속도제어
 volatile uint32_t lastPositionUpdateTime = 0;
 volatile double speedRPM = 0.0;
 
@@ -151,6 +149,10 @@ volatile uint32_t lastIntegralUpdateTime = 0;
 uint16_t integraldt = 10; // ms
 
 double integralLimit = 100.0;
+
+// 위치제어
+volatile int32_t desiredStep = 0;
+volatile uint8_t lastStepPosition = 0;
 
 // 방향 설정
 volatile uint8_t isCCW = 0;
@@ -305,7 +307,7 @@ int main(void)
               }
 
               else {
-                  controlState = STEP_CURRENT_CONTROL;
+                  controlState = STEP_INIT;
               }
           }
 
@@ -358,11 +360,64 @@ int main(void)
               __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, (phase & 0b010) ? dutyCycle : 0);
               __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, (phase & 0b001) ? dutyCycle : 0);
           }
+
+          else if (controlState == STEP_POSITION_CONTROL) {
+              if (desiredStep > 0) {
+                  // CW 방향으로 1스텝 이동
+                  isCCW = 0;
+
+                  uint8_t phase = cwLUT[position];
+                  uint32_t dutyCycle = (uint32_t)(targetDutyCycle * timerARR);
+
+                  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (phase & 0b100) ? dutyCycle : 0);
+                  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, (phase & 0b010) ? dutyCycle : 0);
+                  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, (phase & 0b001) ? dutyCycle : 0);
+
+                  if (position != lastStepPosition) {
+                      desiredStep--;
+                      lastStepPosition = position;
+                  }
+              }
+
+              else if (desiredStep < 0) {
+                  // CCW 방향으로 1스텝 이동
+                  isCCW = 1;
+
+                  uint8_t phase = ccwLUT[position];
+                  uint32_t dutyCycle = (uint32_t)(targetDutyCycle * timerARR);
+
+                  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (phase & 0b100) ? dutyCycle : 0);
+                  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, (phase & 0b010) ? dutyCycle : 0);
+                  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, (phase & 0b001) ? dutyCycle : 0);
+
+                  if (position != lastStepPosition) {
+                      desiredStep++;
+                      lastStepPosition = position;
+                  }
+              }
+          }
       }
 
       // FOC motor control logic
       else if (currentMode == MODE_FOC) {
 
+      }
+
+
+      // 속도 측정
+      // continue문 방지를 위해 아래에 위치
+      uint32_t currentTime = HAL_GetTick();
+      uint32_t timeDiff = currentTime - lastPositionUpdateTime;
+      if (timeDiff == 0) {
+          continue; // 시간 차이가 0이면 무시
+      }
+
+      // 최소 시간 간격 체크 (1ms 미만은 노이즈로 간주)
+      if (timeDiff >= 1 && lastPositionUpdateTime != 0) {
+          speedRPM = (60.0 * 1000.0) / (timeDiff * 24.0); // 6섹터*4극쌍
+          if (rotationDirection == -1) {
+              speedRPM = -speedRPM; // CCW 방향이면 음수
+          }
       }
     /* USER CODE END WHILE */
 
@@ -856,24 +911,8 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
         }
     }
 
-    // 속도 업데이트
-    uint32_t currentTime = HAL_GetTick();
-    uint32_t timeDiff = currentTime - lastPositionUpdateTime;
-    
-    // 최소 시간 간격 체크 (2ms 미만은 노이즈로 간주)
-    if (timeDiff >= 2 && lastPositionUpdateTime != 0) {
-        speedRPM = (60.0 * 1000.0) / (timeDiff * 24.0); // 6섹터*4극쌍
-        if (rotationDirection == -1) {
-            speedRPM = -speedRPM; // CCW 방향이면 음수
-        }
-        lastPositionUpdateTime = currentTime;
-    }
-    else if (lastPositionUpdateTime == 0) {
-        // 첫 번째 인터럽트: 시간만 기록하고 속도 계산 안 함
-        lastPositionUpdateTime = currentTime;
-        speedRPM = 0.0;
-    }
-    // timeDiff < 2인 경우: 너무 빠른 인터럽트는 무시 (속도 유지)
+    // 속도 업데이트용 시간 기록
+    lastPositionUpdateTime = HAL_GetTick();
 
     // 디버그 변수 업데이트
     debugVar1++;
