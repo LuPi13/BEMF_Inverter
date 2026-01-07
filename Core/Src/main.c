@@ -137,6 +137,21 @@ volatile uint8_t prevPosition = 0;
 
 volatile int8_t rotationDirection = 0; // 1 = CW, -1 = CCW, 0 = 정지/무효
 
+// 속도
+volatile uint32_t lastPositionUpdateTime = 0;
+volatile double speedRPM = 0.0;
+
+volatile double desiredSpeedRPM = 0.0;
+
+double kp_speed = 0.003;
+double ki_speed = 0.0001;
+
+double speedIntegral = 0.0;
+volatile uint32_t lastIntegralUpdateTime = 0;
+uint16_t integraldt = 10; // ms
+
+double integralLimit = 100.0;
+
 // 방향 설정
 volatile uint8_t isCCW = 0;
 
@@ -295,6 +310,45 @@ int main(void)
           }
 
           else if (controlState == STEP_CURRENT_CONTROL) {
+              // 홀비트로 위상 매핑
+              uint8_t phase = isCCW ? ccwLUT[position] : cwLUT[position];
+              // 듀티 사이클 설정
+              uint32_t dutyCycle = (uint32_t)(targetDutyCycle * timerARR);
+              // PWM 출력 설정
+              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (phase & 0b100) ? dutyCycle : 0);
+              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, (phase & 0b010) ? dutyCycle : 0);
+              __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, (phase & 0b001) ? dutyCycle : 0);
+          }
+
+          else if (controlState == STEP_VELOCITY_CONTROL) {
+                // speedRPM 변수에 대한 PI 제어
+              // 방향 설정
+              double targetSpeed = desiredSpeedRPM;
+              if (targetSpeed < 0) {
+                  isCCW = 1;
+                  targetSpeed = -targetSpeed; // 절댓값으로 변환
+              } else {
+                  isCCW = 0;
+              }
+              
+              // 현재 속도의 절댓값
+              double currentSpeed = (speedRPM < 0) ? -speedRPM : speedRPM;
+              
+              // 에러 계산 (항상 양수 기준)
+              double error = targetSpeed - currentSpeed;
+              
+              // P 제어
+              double controlOutput = kp_speed * error;
+
+              // 출력 제한 (0 ~ 0.15)
+              if (controlOutput < 0.0) {
+                  controlOutput = 0.0;
+              } else if (controlOutput > 0.15) {
+                  controlOutput = 0.15;
+              }
+
+              targetDutyCycle = controlOutput;
+
               // 홀비트로 위상 매핑
               uint8_t phase = isCCW ? ccwLUT[position] : cwLUT[position];
               // 듀티 사이클 설정
@@ -801,6 +855,25 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
             rotationDirection = -1; // CCW
         }
     }
+
+    // 속도 업데이트
+    uint32_t currentTime = HAL_GetTick();
+    uint32_t timeDiff = currentTime - lastPositionUpdateTime;
+    
+    // 최소 시간 간격 체크 (2ms 미만은 노이즈로 간주)
+    if (timeDiff >= 2 && lastPositionUpdateTime != 0) {
+        speedRPM = (60.0 * 1000.0) / (timeDiff * 24.0); // 6섹터*4극쌍
+        if (rotationDirection == -1) {
+            speedRPM = -speedRPM; // CCW 방향이면 음수
+        }
+        lastPositionUpdateTime = currentTime;
+    }
+    else if (lastPositionUpdateTime == 0) {
+        // 첫 번째 인터럽트: 시간만 기록하고 속도 계산 안 함
+        lastPositionUpdateTime = currentTime;
+        speedRPM = 0.0;
+    }
+    // timeDiff < 2인 경우: 너무 빠른 인터럽트는 무시 (속도 유지)
 
     // 디버그 변수 업데이트
     debugVar1++;
