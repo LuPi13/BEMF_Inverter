@@ -24,6 +24,7 @@
 /* USER CODE BEGIN Includes */
 #include <string.h>
 #include "usbd_cdc_if.h"
+#include <math.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -139,10 +140,12 @@ volatile int8_t rotationDirection = 0; // 1 = CW, -1 = CCW, 0 = 정지/무효
 volatile uint32_t lastPositionUpdateTime = 0;
 volatile double speedRPM = 0.0;
 
+volatile uint32_t rpmTimeout = 100; // ms
+
 volatile double desiredSpeedRPM = 0.0;
 
-double kp_speed = 0.003;
-double ki_speed = 0.0001;
+volatile double kp_speed = 0.001;
+volatile double ki_speed = 0.0001;
 
 double speedIntegral = 0.0;
 volatile uint32_t lastIntegralUpdateTime = 0;
@@ -279,6 +282,12 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+      // 속도 타임아웃 체크 (인터럽트가 일정 시간 없으면 속도 0으로)
+      uint32_t currentTime = HAL_GetTick();
+      if (currentTime - lastPositionUpdateTime > rpmTimeout) {
+          speedRPM = 0.0;
+      }
+      
       if (zeroPosFlag) {
           controlState = STEP_SET_0POS;
           zeroPosTimer = HAL_GetTick();
@@ -323,33 +332,39 @@ int main(void)
           }
 
           else if (controlState == STEP_VELOCITY_CONTROL) {
-                // speedRPM 변수에 대한 PI 제어
-              // 방향 설정
-              double targetSpeed = desiredSpeedRPM;
-              if (targetSpeed < 0) {
-                  isCCW = 1;
-                  targetSpeed = -targetSpeed; // 절댓값으로 변환
-              } else {
-                  isCCW = 0;
-              }
-              
-              // 현재 속도의 절댓값
-              double currentSpeed = (speedRPM < 0) ? -speedRPM : speedRPM;
-              
+              // speedRPM 변수에 대한 PI 제어
               // 에러 계산 (항상 양수 기준)
-              double error = targetSpeed - currentSpeed;
+              double error = desiredSpeedRPM - speedRPM;
               
-              // P 제어
-              double controlOutput = kp_speed * error;
 
-              // 출력 제한 (0 ~ 0.15)
-              if (controlOutput < 0.0) {
-                  controlOutput = 0.0;
-              } else if (controlOutput > 0.15) {
-                  controlOutput = 0.15;
+              // I 제어
+              // 적분
+              uint32_t now = HAL_GetTick();
+              if (now - lastIntegralUpdateTime >= integraldt) {
+                  speedIntegral += error * (now - lastIntegralUpdateTime);
+                  // 적분 제한
+                  if (speedIntegral > integralLimit) {
+                      speedIntegral = integralLimit;
+                  }
+                  else if (speedIntegral < -integralLimit) {
+                      speedIntegral = -integralLimit;
+                  }
+                  lastIntegralUpdateTime = now;
               }
 
-              targetDutyCycle = controlOutput;
+              // P 제어
+              double controlOutput = kp_speed * error + ki_speed * speedIntegral;;
+
+              // 선형 보상 추가(때려맞춤)
+              targetDutyCycle = tanh(0.00065 * desiredSpeedRPM) + controlOutput;
+
+              // 위험하니 클램핑
+              if (targetDutyCycle > 0.15) {
+                  targetDutyCycle = 0.15;
+              }
+              else if (targetDutyCycle < 0.0) {
+                  targetDutyCycle = 0.0;
+              }
 
               // 홀비트로 위상 매핑
               uint8_t phase = isCCW ? ccwLUT[position] : cwLUT[position];
@@ -362,11 +377,10 @@ int main(void)
           }
 
           else if (controlState == STEP_POSITION_CONTROL) {
-              if (desiredStep > 0) {
-                  // CW 방향으로 1스텝 이동
-                  isCCW = 0;
+              if (desiredStep != 0) {
+                  isCCW = ((desiredStep < 0) ? 1 : 0);
 
-                  uint8_t phase = cwLUT[position];
+                  uint8_t phase = isCCW ? ccwLUT[position] : cwLUT[position];
                   uint32_t dutyCycle = (uint32_t)(targetDutyCycle * timerARR);
 
                   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (phase & 0b100) ? dutyCycle : 0);
@@ -374,26 +388,16 @@ int main(void)
                   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, (phase & 0b001) ? dutyCycle : 0);
 
                   if (position != lastStepPosition) {
-                      desiredStep--;
+                      desiredStep += (isCCW ? 1 : -1);
                       lastStepPosition = position;
                   }
               }
 
-              else if (desiredStep < 0) {
-                  // CCW 방향으로 1스텝 이동
-                  isCCW = 1;
-
-                  uint8_t phase = ccwLUT[position];
-                  uint32_t dutyCycle = (uint32_t)(targetDutyCycle * timerARR);
-
-                  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (phase & 0b100) ? dutyCycle : 0);
-                  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, (phase & 0b010) ? dutyCycle : 0);
-                  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, (phase & 0b001) ? dutyCycle : 0);
-
-                  if (position != lastStepPosition) {
-                      desiredStep++;
-                      lastStepPosition = position;
-                  }
+              else {
+                  lastStepPosition = position;
+                  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
+                  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
+                  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
               }
           }
       }
@@ -404,21 +408,6 @@ int main(void)
       }
 
 
-      // 속도 측정
-      // continue문 방지를 위해 아래에 위치
-      uint32_t currentTime = HAL_GetTick();
-      uint32_t timeDiff = currentTime - lastPositionUpdateTime;
-      if (timeDiff == 0) {
-          continue; // 시간 차이가 0이면 무시
-      }
-
-      // 최소 시간 간격 체크 (1ms 미만은 노이즈로 간주)
-      if (timeDiff >= 1 && lastPositionUpdateTime != 0) {
-          speedRPM = (60.0 * 1000.0) / (timeDiff * 24.0); // 6섹터*4극쌍
-          if (rotationDirection == -1) {
-              speedRPM = -speedRPM; // CCW 방향이면 음수
-          }
-      }
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -901,18 +890,37 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
     // 위치 업데이트
     position = hallToSector[hallbit];
     
+    // position이 변하지 않았으면 속도 계산 생략 (동일 섹터에서 여러 인터럽트 방지)
+    if (position == prevPosition || position == 0xFF) {
+        return; // 유효하지 않은 위치거나 변화 없음
+    }
+    
     // 방향 감지
-    if (position != prevPosition) {
-        if (((prevPosition + 1) % 6) == position) {
-            rotationDirection = 1; // CW
-        }
-        else if (((prevPosition + 5) % 6) == position) {
-            rotationDirection = -1; // CCW
-        }
+    if (((prevPosition + 1) % 6) == position) {
+        rotationDirection = 1; // CW
+    }
+    else if (((prevPosition + 5) % 6) == position) {
+        rotationDirection = -1; // CCW
     }
 
-    // 속도 업데이트용 시간 기록
-    lastPositionUpdateTime = HAL_GetTick();
+    // 속도 계산 (인터럽트에서 직접 계산)
+    uint32_t currentTime = HAL_GetTick();
+    uint32_t timeDiff = currentTime - lastPositionUpdateTime;
+    
+    // 최소 시간 간격 체크 (2ms 미만은 노이즈로 간주)
+    if (timeDiff >= 2 && lastPositionUpdateTime != 0) {
+        speedRPM = (60.0 * 1000.0) / (timeDiff * 24.0); // 6섹터*4극쌍
+        if (rotationDirection == -1) {
+            speedRPM = -speedRPM; // CCW 방향이면 음수
+        }
+        lastPositionUpdateTime = currentTime;
+    }
+    else if (lastPositionUpdateTime == 0) {
+        // 첫 번째 인터럽트: 시간만 기록
+        lastPositionUpdateTime = currentTime;
+        speedRPM = 0.0;
+    }
+    // timeDiff < 2인 경우: 노이즈로 간주하고 속도 계산 안 함
 
     // 디버그 변수 업데이트
     debugVar1++;
