@@ -23,6 +23,7 @@
 /* USER CODE BEGIN Includes */
 
 /* USER CODE END Includes */
+extern DMA_HandleTypeDef hdma_adc2;
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN TD */
@@ -136,6 +137,24 @@ void HAL_ADC_MspInit(ADC_HandleTypeDef* hadc)
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
+    /* ADC2 DMA Init */
+    /* ADC2 Init */
+    hdma_adc2.Instance = DMA1_Channel1;
+    hdma_adc2.Init.Request = DMA_REQUEST_ADC2;
+    hdma_adc2.Init.Direction = DMA_PERIPH_TO_MEMORY;
+    hdma_adc2.Init.PeriphInc = DMA_PINC_DISABLE;
+    hdma_adc2.Init.MemInc = DMA_MINC_ENABLE;
+    hdma_adc2.Init.PeriphDataAlignment = DMA_PDATAALIGN_HALFWORD;
+    hdma_adc2.Init.MemDataAlignment = DMA_MDATAALIGN_HALFWORD;
+    hdma_adc2.Init.Mode = DMA_CIRCULAR;
+    hdma_adc2.Init.Priority = DMA_PRIORITY_LOW;
+    if (HAL_DMA_Init(&hdma_adc2) != HAL_OK)
+    {
+      Error_Handler();
+    }
+
+    __HAL_LINKDMA(hadc,DMA_Handle,hdma_adc2);
+
     /* USER CODE BEGIN ADC2_MspInit 1 */
 
     /* USER CODE END ADC2_MspInit 1 */
@@ -203,6 +222,8 @@ void HAL_ADC_MspDeInit(ADC_HandleTypeDef* hadc)
 
     HAL_GPIO_DeInit(GPIOB, GPIO_PIN_2);
 
+    /* ADC2 DMA DeInit */
+    HAL_DMA_DeInit(hadc->DMA_Handle);
     /* USER CODE BEGIN ADC2_MspDeInit 1 */
 
     /* USER CODE END ADC2_MspDeInit 1 */
@@ -364,6 +385,32 @@ void HAL_TIM_Encoder_MspInit(TIM_HandleTypeDef* htim_encoder)
 
 }
 
+/**
+  * @brief TIM_Base MSP Initialization
+  * This function configures the hardware resources used in this example
+  * @param htim_base: TIM_Base handle pointer
+  * @retval None
+  */
+void HAL_TIM_Base_MspInit(TIM_HandleTypeDef* htim_base)
+{
+  if(htim_base->Instance==TIM6)
+  {
+    /* USER CODE BEGIN TIM6_MspInit 0 */
+
+    /* USER CODE END TIM6_MspInit 0 */
+    /* Peripheral clock enable */
+    __HAL_RCC_TIM6_CLK_ENABLE();
+    /* TIM6 interrupt Init */
+    HAL_NVIC_SetPriority(TIM6_DAC_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(TIM6_DAC_IRQn);
+    /* USER CODE BEGIN TIM6_MspInit 1 */
+
+    /* USER CODE END TIM6_MspInit 1 */
+
+  }
+
+}
+
 void HAL_TIM_MspPostInit(TIM_HandleTypeDef* htim)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
@@ -457,6 +504,31 @@ void HAL_TIM_Encoder_MspDeInit(TIM_HandleTypeDef* htim_encoder)
     /* USER CODE BEGIN TIM3_MspDeInit 1 */
 
     /* USER CODE END TIM3_MspDeInit 1 */
+  }
+
+}
+
+/**
+  * @brief TIM_Base MSP De-Initialization
+  * This function freeze the hardware resources used in this example
+  * @param htim_base: TIM_Base handle pointer
+  * @retval None
+  */
+void HAL_TIM_Base_MspDeInit(TIM_HandleTypeDef* htim_base)
+{
+  if(htim_base->Instance==TIM6)
+  {
+    /* USER CODE BEGIN TIM6_MspDeInit 0 */
+
+    /* USER CODE END TIM6_MspDeInit 0 */
+    /* Peripheral clock disable */
+    __HAL_RCC_TIM6_CLK_DISABLE();
+
+    /* TIM6 interrupt DeInit */
+    HAL_NVIC_DisableIRQ(TIM6_DAC_IRQn);
+    /* USER CODE BEGIN TIM6_MspDeInit 1 */
+
+    /* USER CODE END TIM6_MspDeInit 1 */
   }
 
 }

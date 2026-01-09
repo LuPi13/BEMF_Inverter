@@ -59,11 +59,13 @@ typedef enum {
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc2;
 ADC_HandleTypeDef hadc3;
+DMA_HandleTypeDef hdma_adc2;
 
 FDCAN_HandleTypeDef hfdcan2;
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim3;
+TIM_HandleTypeDef htim6;
 
 UART_HandleTypeDef huart2;
 
@@ -161,6 +163,11 @@ volatile uint8_t lastStepPosition = 0;
 volatile uint8_t isCCW = 0;
 
 
+
+// 센서
+uint16_t adc2Buffer[8]; // ADC2용 버퍼 (A,B,C상 전류 + Vdc)
+
+
 // 디버그용
 volatile uint32_t debugVar1 = 0;
 /* USER CODE END PV */
@@ -168,12 +175,14 @@ volatile uint32_t debugVar1 = 0;
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_FDCAN2_Init(void);
 static void MX_ADC2_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_ADC3_Init(void);
+static void MX_TIM6_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -242,13 +251,15 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_FDCAN2_Init();
   MX_ADC2_Init();
   MX_TIM1_Init();
   MX_TIM3_Init();
   MX_USART2_UART_Init();
-  MX_USB_Device_Init();
   MX_ADC3_Init();
+  MX_TIM6_Init();
+  MX_USB_Device_Init();
   /* USER CODE BEGIN 2 */
   // ARR 값 불러오기
   timerARR = htim1.Init.Period;
@@ -260,6 +271,10 @@ int main(void)
   HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_1);
   HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_2);
   HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_3);
+
+  // ADC2 DMA 시작
+  HAL_TIM_Base_Start(&htim6);
+  HAL_ADC_Start_DMA(&hadc2, (uint32_t*)adc2Buffer, 8);
 
   // 운영 모드 선택
   // Mode_Sel 핀이 HIGH이면 FOC 모드
@@ -341,7 +356,7 @@ int main(void)
               // 적분
               uint32_t now = HAL_GetTick();
               if (now - lastIntegralUpdateTime >= integraldt) {
-                  speedIntegral += error * (now - lastIntegralUpdateTime);
+                  speedIntegral += error * (now - lastIntegralUpdateTime) / 1000;
                   // 적분 제한
                   if (speedIntegral > integralLimit) {
                       speedIntegral = integralLimit;
@@ -490,17 +505,21 @@ static void MX_ADC2_Init(void)
   hadc2.Init.Resolution = ADC_RESOLUTION_12B;
   hadc2.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   hadc2.Init.GainCompensation = 0;
-  hadc2.Init.ScanConvMode = ADC_SCAN_DISABLE;
+  hadc2.Init.ScanConvMode = ADC_SCAN_ENABLE;
   hadc2.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   hadc2.Init.LowPowerAutoWait = DISABLE;
   hadc2.Init.ContinuousConvMode = DISABLE;
-  hadc2.Init.NbrOfConversion = 1;
+  hadc2.Init.NbrOfConversion = 4;
   hadc2.Init.DiscontinuousConvMode = DISABLE;
-  hadc2.Init.ExternalTrigConv = ADC_SOFTWARE_START;
-  hadc2.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
-  hadc2.Init.DMAContinuousRequests = DISABLE;
+  hadc2.Init.ExternalTrigConv = ADC_EXTERNALTRIG_T6_TRGO;
+  hadc2.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_RISING;
+  hadc2.Init.DMAContinuousRequests = ENABLE;
   hadc2.Init.Overrun = ADC_OVR_DATA_PRESERVED;
-  hadc2.Init.OversamplingMode = DISABLE;
+  hadc2.Init.OversamplingMode = ENABLE;
+  hadc2.Init.Oversampling.Ratio = ADC_OVERSAMPLING_RATIO_4;
+  hadc2.Init.Oversampling.RightBitShift = ADC_RIGHTBITSHIFT_2;
+  hadc2.Init.Oversampling.TriggeredMode = ADC_TRIGGEREDMODE_SINGLE_TRIGGER;
+  hadc2.Init.Oversampling.OversamplingStopReset = ADC_REGOVERSAMPLING_CONTINUED_MODE;
   if (HAL_ADC_Init(&hadc2) != HAL_OK)
   {
     Error_Handler();
@@ -514,6 +533,34 @@ static void MX_ADC2_Init(void)
   sConfig.SingleDiff = ADC_SINGLE_ENDED;
   sConfig.OffsetNumber = ADC_OFFSET_NONE;
   sConfig.Offset = 0;
+  if (HAL_ADC_ConfigChannel(&hadc2, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_4;
+  sConfig.Rank = ADC_REGULAR_RANK_2;
+  if (HAL_ADC_ConfigChannel(&hadc2, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_5;
+  sConfig.Rank = ADC_REGULAR_RANK_3;
+  if (HAL_ADC_ConfigChannel(&hadc2, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_11;
+  sConfig.Rank = ADC_REGULAR_RANK_4;
+  sConfig.SingleDiff = ADC_DIFFERENTIAL_ENDED;
   if (HAL_ADC_ConfigChannel(&hadc2, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -765,6 +812,44 @@ static void MX_TIM3_Init(void)
 }
 
 /**
+  * @brief TIM6 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM6_Init(void)
+{
+
+  /* USER CODE BEGIN TIM6_Init 0 */
+
+  /* USER CODE END TIM6_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM6_Init 1 */
+
+  /* USER CODE END TIM6_Init 1 */
+  htim6.Instance = TIM6;
+  htim6.Init.Prescaler = 0;
+  htim6.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim6.Init.Period = 1699;
+  htim6.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim6) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_UPDATE;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim6, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM6_Init 2 */
+
+  /* USER CODE END TIM6_Init 2 */
+
+}
+
+/**
   * @brief USART2 Initialization Function
   * @param None
   * @retval None
@@ -809,6 +894,23 @@ static void MX_USART2_UART_Init(void)
   /* USER CODE BEGIN USART2_Init 2 */
 
   /* USER CODE END USART2_Init 2 */
+
+}
+
+/**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMAMUX1_CLK_ENABLE();
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Channel1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
 
 }
 
