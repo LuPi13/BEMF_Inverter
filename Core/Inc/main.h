@@ -76,7 +76,7 @@ void Error_Handler(void);
 #define Mode_Sel_GPIO_Port GPIOC
 
 /* USER CODE BEGIN Private defines */
-
+void USB_ArrayCopy();
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus

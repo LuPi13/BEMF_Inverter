@@ -44,6 +44,15 @@ typedef enum {
     FOC_CURRENT_CONTROL,
     FOC_VELOCITY_CONTROL,
 } ControlMode;
+
+// 명령어 처리 함수 타입
+typedef void (*CommandHandler)(char* args);
+
+// 명령어 구조체
+typedef struct {
+    const char* command;
+    CommandHandler handler;
+} CommandEntry;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -168,6 +177,12 @@ volatile uint8_t isCCW = 0;
 uint16_t adc2Buffer[8]; // ADC2용 버퍼 (A,B,C상 전류 + Vdc)
 
 
+// USB 통신
+extern uint8_t UserRxBufferFS[APP_RX_DATA_SIZE];
+uint8_t usbRx[APP_RX_DATA_SIZE] = {0};
+uint8_t receiveFlag = 0;
+
+
 // 디버그용
 volatile uint32_t debugVar1 = 0;
 /* USER CODE END PV */
@@ -184,11 +199,38 @@ static void MX_USART2_UART_Init(void);
 static void MX_ADC3_Init(void);
 static void MX_TIM6_Init(void);
 /* USER CODE BEGIN PFP */
+// USB 명령어 처리 함수
+void ProcessUSBCommand(void);
+void ParseCommand(char* cmdStr);
 
+// 개별 명령어 핸들러
+void CMD_SetMode(char* args);
+void CMD_SetDuty(char* args);
+void CMD_SetSpeed(char* args);
+void CMD_SetDirection(char* args);
+void CMD_SetZeroPos(char* args);
+void CMD_SetParam(char* args);
+void CMD_GetVI(char* args);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+// adc값->mV
+static inline int32_t Code_to_VmV(uint16_t code) {
+    float v_bus = ((float) code - 2048.0) * 3.3f * 40.0f / 2047.0f;
+    int32_t mV = (int32_t)(v_bus * 1000.0f + 0.5f);
+    if (mV < 0) mV = 0;
+    return mV;
+}
+
+// adc값->mA
+static inline int32_t Code_to_ImA(uint16_t code) {
+    float i = (float) code * 3.3f / 4095.0f;
+    float I = (i - 1.65f) / 0.066f;
+    return (int32_t) (I * 1000.0f);
+}
+
+
 int8_t USB_Log(const char* msg) {
     uint16_t len = strlen(msg);
     if (len > 0) {
@@ -220,6 +262,262 @@ int8_t USB_LogLn(const char* msg) {
     }
     return res;
 }
+
+void USB_ArrayCopy() {
+    strcpy((char*) usbRx, (char*) UserRxBufferFS);
+    memset(UserRxBufferFS, 0, APP_TX_DATA_SIZE);
+    receiveFlag = 1;
+}
+
+// ===== USB 명령어 처리 시스템 =====
+
+// 명령어 테이블 (확장 시 여기에 추가)
+const CommandEntry commandTable[] = {
+    {"setmode", CMD_SetMode},
+    {"setduty", CMD_SetDuty},
+    {"setspeed", CMD_SetSpeed},
+    {"setdir", CMD_SetDirection},
+    {"setzero", CMD_SetZeroPos},
+    {"setparam", CMD_SetParam},
+    {"getvi", CMD_GetVI},
+};
+
+const uint32_t commandTableSize = sizeof(commandTable) / sizeof(CommandEntry);
+
+// 명령어 파싱 함수
+void ParseCommand(char* cmdStr) {
+    // 공백/개행 제거
+    char* end = cmdStr + strlen(cmdStr) - 1;
+    while(end > cmdStr && (*end == ' ' || *end == '\r' || *end == '\n' || *end == '\t')) {
+        *end = '\0';
+        end--;
+    }
+    
+    // 첫 번째 띄어쓰기 찾기 (명령어와 인자 구분)
+    char* spacePos = strchr(cmdStr, ' ');
+    char* args = NULL;
+    
+    if (spacePos != NULL) {
+        *spacePos = '\0';  // 명령어 문자열 종료
+        args = spacePos + 1;  // 인자 시작 위치
+        
+        // 인자 앞쪽 공백 제거
+        while (*args == ' ' || *args == '\t') {
+            args++;
+        }
+    }
+    
+    // 명령어 테이블에서 검색
+    for (uint32_t i = 0; i < commandTableSize; i++) {
+        if (strcmp(cmdStr, commandTable[i].command) == 0) {
+            commandTable[i].handler(args);
+            return;
+        }
+    }
+    
+    // 명령어를 찾지 못한 경우
+    USB_Log("Unknown command: ");
+    USB_LogLn(cmdStr);
+}
+
+// USB 명령어 처리 메인 함수
+void ProcessUSBCommand(void) {
+    ParseCommand((char*)usbRx);
+    memset(usbRx, 0, APP_RX_DATA_SIZE);
+    receiveFlag = 0;
+}
+
+// ===== 명령어 핸들러 구현 =====
+
+void CMD_SetMode(char* args) {
+    if (args == NULL) {
+        USB_LogLn("Error: setmode requires argument");
+        return;
+    }
+    
+    if (strcmp(args, "current") == 0) {
+        controlState = STEP_CURRENT_CONTROL;
+        USB_LogLn("Mode set to CURRENT_CONTROL");
+    }
+    else if (strcmp(args, "velocity") == 0) {
+        controlState = STEP_VELOCITY_CONTROL;
+        speedIntegral = 0.0;  // 적분 리셋
+        desiredSpeedRPM = 0.0;
+        USB_LogLn("Mode set to VELOCITY_CONTROL");
+    }
+    else if (strcmp(args, "position") == 0) {
+        controlState = STEP_POSITION_CONTROL;
+        USB_LogLn("Mode set to POSITION_CONTROL");
+    }
+    else if (strcmp(args, "init") == 0) {
+        controlState = STEP_INIT;
+        targetDutyCycle = 0.0;
+        USB_LogLn("Mode set to INIT");
+    }
+    else {
+        USB_Log("Error: Unknown mode '");
+        USB_Log(args);
+        USB_LogLn("'");
+    }
+}
+
+void CMD_SetDuty(char* args) {
+    if (args == NULL) {
+        USB_LogLn("Error: setduty requires argument");
+        return;
+    }
+    
+    double duty = atof(args);
+    
+    if (duty >= 0.0 && duty <= 1.0) {
+        targetDutyCycle = duty;
+        char msg[64];
+        snprintf(msg, sizeof(msg), "Duty cycle set to %.3f", duty);
+        USB_LogLn(msg);
+    }
+    else {
+        USB_LogLn("Error: Duty must be between 0.0 and 1.0");
+    }
+}
+
+void CMD_SetSpeed(char* args) {
+    if (args == NULL) {
+        USB_LogLn("Error: setspeed requires argument");
+        return;
+    }
+    
+    double speed = atof(args);
+    desiredSpeedRPM = speed;
+    
+    char msg[64];
+    snprintf(msg, sizeof(msg), "Target speed set to %.1f RPM", speed);
+    USB_LogLn(msg);
+}
+
+void CMD_SetDirection(char* args) {
+    if (args == NULL) {
+        USB_LogLn("Error: setdir requires argument");
+        return;
+    }
+    
+    if (strcmp(args, "cw") == 0) {
+        isCCW = 0;
+        USB_LogLn("Direction set to CW");
+    }
+    else if (strcmp(args, "ccw") == 0) {
+        isCCW = 1;
+        USB_LogLn("Direction set to CCW");
+    }
+    else {
+        USB_LogLn("Error: Direction must be cw or ccw");
+    }
+}
+
+void CMD_SetZeroPos(char* args) {
+    zeroPosFlag = 1;
+    USB_LogLn("Zero position routine triggered");
+}
+
+void CMD_SetParam(char* args) {
+    if (args == NULL) {
+        USB_LogLn("Error: setparam requires parameter name and value");
+        return;
+    }
+    
+    // 첫 번째 공백으로 파라미터 이름과 값 분리
+    char* spacePos = strchr(args, ' ');
+    if (spacePos == NULL) {
+        USB_LogLn("Error: setparam requires parameter name and value");
+        return;
+    }
+    
+    *spacePos = '\0';  // 파라미터 이름 문자열 종료
+    char* paramName = args;
+    char* paramValue = spacePos + 1;
+    
+    // 값 앞의 공백 제거
+    while (*paramValue == ' ' || *paramValue == '\t') {
+        paramValue++;
+    }
+    
+    // 파라미터 이름에 따라 처리
+    if (strcmp(paramName, "duty") == 0) {
+        double duty = atof(paramValue);
+        if (duty >= 0.0 && duty <= 1.0) {
+            targetDutyCycle = duty;
+            char msg[64];
+            snprintf(msg, sizeof(msg), "duty set to %.3f", duty);
+            USB_LogLn(msg);
+        } else {
+            USB_LogLn("Error: duty must be between 0.0 and 1.0");
+        }
+    }
+    else if (strcmp(paramName, "speed") == 0) {
+        double speed = atof(paramValue);
+        desiredSpeedRPM = speed;
+        char msg[64];
+        snprintf(msg, sizeof(msg), "speed set to %.1f RPM", speed);
+        USB_LogLn(msg);
+    }
+    else if (strcmp(paramName, "kp_speed") == 0) {
+        kp_speed = atof(paramValue);
+        char msg[64];
+        snprintf(msg, sizeof(msg), "kp_speed set to %.6f", kp_speed);
+        USB_LogLn(msg);
+    }
+    else if (strcmp(paramName, "ki_speed") == 0) {
+        ki_speed = atof(paramValue);
+        char msg[64];
+        snprintf(msg, sizeof(msg), "ki_speed set to %.6f", ki_speed);
+        USB_LogLn(msg);
+    }
+    else if (strcmp(paramName, "zeroduty") == 0) {
+        zeroPosDutyCycle = atof(paramValue);
+        char msg[64];
+        snprintf(msg, sizeof(msg), "zeroduty set to %.3f", zeroPosDutyCycle);
+        USB_LogLn(msg);
+    }
+    else if (strcmp(paramName, "zerotick") == 0) {
+        zeroPosTick = (uint32_t)atoi(paramValue);
+        char msg[64];
+        snprintf(msg, sizeof(msg), "zerotick set to %lu ms", (unsigned long)zeroPosTick);
+        USB_LogLn(msg);
+    }
+    else {
+        USB_Log("Error: Unknown parameter '");
+        USB_Log(paramName);
+        USB_LogLn("'");
+    }
+}
+
+void CMD_GetVI(char* args) {
+    // 전압과 전류 읽기
+    int16_t ia_code = (int16_t)adc2Buffer[0]; // A상 전류
+    int16_t ib_code = (int16_t)adc2Buffer[1]; // B상 전류
+    int16_t ic_code = (int16_t)adc2Buffer[2]; // C상 전류
+    uint16_t vdc_code = adc2Buffer[3]; // Vdc
+
+    if ((args == NULL) || (strcmp(args, "refined") == 0)) {
+        // 물리량 환산
+        int32_t ia_mA = Code_to_ImA(ia_code);
+        int32_t ib_mA = Code_to_ImA(ib_code);
+        int32_t ic_mA = Code_to_ImA(ic_code);
+        int32_t vdc_mV = Code_to_VmV(vdc_code);
+
+        char msg[128];
+        snprintf(msg, sizeof(msg), "Ia:%ld/Ib:%ld/Ic:%ld/Vdc:%ld",
+                 (long)ia_mA, (long)ib_mA, (long)ic_mA, (long)vdc_mV);
+        USB_LogLn(msg);
+        return;
+    }
+
+    if (strcmp(args, "raw") == 0) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "Ia:%d/Ib:%d/Ic:%d/Vdc:%d", ia_code, ib_code, ic_code, vdc_code);
+        USB_LogLn(msg);
+    }
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -297,6 +595,13 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+      // USB 명령 처리
+      if (receiveFlag) {
+          ProcessUSBCommand();
+      }
+
+
+
       // 속도 타임아웃 체크 (인터럽트가 일정 시간 없으면 속도 0으로)
       uint32_t currentTime = HAL_GetTick();
       if (currentTime - lastPositionUpdateTime > rpmTimeout) {
@@ -331,6 +636,8 @@ int main(void)
               }
 
               else {
+                  USB_LogLn("Zero position routine done");
+                  USB_LogLn("Mode set to INIT");
                   controlState = STEP_INIT;
               }
           }
